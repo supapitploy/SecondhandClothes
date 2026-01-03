@@ -1,4 +1,4 @@
-<?php
+<!-- <?php
 require ("includes/common.php");
 session_start();
 ?>
@@ -120,4 +120,4 @@ $('#login').modal('show');
 });
 </script>"; echo "
 <script type='text/javascript'>alert('".$z."')</script>";} ?>
-</html>
+</html> -->

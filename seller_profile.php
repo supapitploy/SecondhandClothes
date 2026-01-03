@@ -1,6 +1,10 @@
 <?php
+// ป้องกัน session_start ซ้ำ
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 require 'includes/common.php';
-session_start();
+
 if (!isset($_GET['id']) || !is_numeric($_GET['id'])) { header('location:products.php'); exit; }
 $sid = (int)$_GET['id'];
 $seller = mysqli_fetch_assoc(mysqli_query($con, "SELECT * FROM users WHERE id=$sid"));

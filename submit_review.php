@@ -1,6 +1,10 @@
 <?php
+// ป้องกัน session_start ซ้ำ
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 require 'includes/common.php';
-session_start();
+
 if (!isset($_SESSION['user_id'])) { header('location:index.php'); exit; }
 if ($_SERVER['REQUEST_METHOD']=='POST') {
     $seller = (int)$_POST['seller_id'];
