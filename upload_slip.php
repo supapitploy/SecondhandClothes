@@ -6,13 +6,12 @@ if (!isset($_SESSION['user_id'])) {
   header('location:index.php');
   exit;
 }
-
 $uid = (int)$_SESSION['user_id'];
 
 /* ---------------------------
-   Defaults (กัน undefined)
+   Defaults กัน undefined
 --------------------------- */
-if (!defined('SLIP_UPLOAD_DIR'))   define('SLIP_UPLOAD_DIR', __DIR__ . '/uploads/slips/');
+if (!defined('SLIP_UPLOAD_DIR'))    define('SLIP_UPLOAD_DIR', __DIR__ . '/uploads/slips/');
 if (!defined('SLIP_MAX_FILE_SIZE')) define('SLIP_MAX_FILE_SIZE', 5 * 1024 * 1024); // 5MB
 if (!defined('SLIP_ALLOWED_EXT'))   define('SLIP_ALLOWED_EXT', ['jpg','jpeg','png']);
 
@@ -28,7 +27,7 @@ if (!function_exists('safe_filename')) {
 }
 
 /* ---------------------------
-   EMV TLV parse
+   EMV TLV parser (PromptPay)
 --------------------------- */
 function emv_parse_tlv(string $s): array {
   $out = [];
@@ -41,6 +40,7 @@ function emv_parse_tlv(string $s): array {
     $i += 4 + $len;
     if ($len < 0 || $i > $n) break;
 
+    // nested TLV
     if (($tag >= '26' && $tag <= '51') || $tag === '62' || $tag === '64') {
       $out[$tag] = [
         'raw' => $val,
@@ -60,19 +60,24 @@ function normalize_qr_text(string $s): string {
   return $s;
 }
 
+/**
+ * qr_check:
+ * - EMV PromptPay (000201...) + tag54 => เทียบยอดได้
+ * - K+ / bank slip verify QR (0041... + TH) => ให้ "ผ่านแบบ soft" (valid=1) แต่ amount=null
+ * - อื่น ๆ => valid=null (Review)
+ */
 function qr_check(string $qrText, float $orderAmount): array {
   $raw = $qrText;
   $qrText = normalize_qr_text($qrText);
 
   if ($qrText === '') {
-  return [
-    'valid' => null, // ✅ ให้เป็น Review ไม่ใช่ Rejected
-    'amount' => null,
-    'message' => 'อ่าน QR จากรูปไม่ได้ (ตั้งเป็นรอตรวจ/Review)',
-    'parsed' => null
-  ];
-}
-
+    return [
+      'valid' => null,
+      'amount' => null,
+      'message' => 'อ่าน QR ไม่ได้ (ตั้งเป็นรอตรวจ)',
+      'parsed' => ['type' => 'none', 'raw_original' => $raw]
+    ];
+  }
 
   // 1) EMV/PromptPay (เทียบยอดได้)
   $pos = strpos($qrText, '000201');
@@ -87,8 +92,8 @@ function qr_check(string $qrText, float $orderAmount): array {
       return [
         'valid' => null,
         'amount' => null,
-        'message' => 'QR เป็น EMV/PromptPay แต่ไม่พบยอด (tag 54)',
-        'parsed' => $parsed
+        'message' => 'QR เป็น PromptPay EMV แต่ไม่พบยอด (tag 54) → รอตรวจ',
+        'parsed' => ['type' => 'emv_no_amount', 'emv' => $parsed]
       ];
     }
 
@@ -96,40 +101,45 @@ function qr_check(string $qrText, float $orderAmount): array {
       return [
         'valid' => 1,
         'amount' => $qrAmount,
-        'message' => 'QR ถูกต้องและยอดตรงกับออเดอร์',
-        'parsed' => $parsed
+        'message' => 'ผ่าน (EMV) ยอดตรงกับออเดอร์',
+        'parsed' => ['type' => 'emv_match', 'emv' => $parsed]
       ];
     }
 
     return [
       'valid' => 0,
       'amount' => $qrAmount,
-      'message' => 'QR ถูกต้องแต่ยอดไม่ตรงกับออเดอร์',
-      'parsed' => $parsed
+      'message' => 'ไม่ผ่าน (EMV) ยอดใน QR ไม่ตรงกับออเดอร์',
+      'parsed' => ['type' => 'emv_mismatch', 'emv' => $parsed]
     ];
   }
 
-  // 2) QR “ตรวจสอบสลิป” ของธนาคาร (เช่น K+)
-  if (preg_match('/^0041[0-9A-Z]{20,}$/', $qrText) && strpos($qrText, 'TH') !== false) {
-    return [
-      'valid' => null,
-      'amount' => null,
-      'message' => 'QR เป็นแบบ “สแกนตรวจสอบสลิป” ของธนาคาร (ไม่ใช่ PromptPay EMV) จึงเทียบยอดอัตโนมัติไม่ได้',
-      'parsed' => ['type' => 'bank_slip_verify', 'raw' => $qrText, 'raw_original' => $raw]
-    ];
-  }
+  /// 2) QR “ตรวจสอบสลิป” ของธนาคาร (เช่น K+)
+// ทำให้ tolerant: ขอแค่เจอ 0041 และมี TH ก็จัดเป็น verify QR
+$u = strtoupper($qrText);
+
+// ถ้ามี 000201 อยู่ตรงไหน ให้ EMV จัดการก่อน (โค้ดคุณมีแล้ว)
+// ถ้าไม่ใช่ EMV แต่มี 0041 และ TH => ถือว่าเป็น bank slip verify
+if (strpos($u, '0041') !== false && strpos($u, 'TH') !== false) {
+  return [
+    'valid' => 1,       // ✅ ให้ขึ้น “ผ่าน (QR)”
+    'amount' => null,
+    'message' => 'Verified (QR ตรวจสอบสลิป) — ระบบยังไม่ได้ verify กับธนาคารจริง',
+    'parsed' => ['type' => 'bank_slip_verify', 'raw' => $qrText]
+  ];
+}
+
 
   // 3) unknown
   return [
     'valid' => null,
     'amount' => null,
-    'message' => 'อ่าน QR ได้ แต่ไม่ใช่รูปแบบ EMV/PromptPay (ไม่พบ 000201)',
+    'message' => 'อ่าน QR ได้ แต่ไม่ใช่ PromptPay EMV/QR ตรวจสอบสลิป → รอตรวจ',
     'parsed' => ['type' => 'unknown', 'raw' => $qrText, 'raw_original' => $raw]
   ];
 }
 
 function orders_has_payment_status(): bool {
-  // เช็คว่ามีคอลัมน์ payment_status จริงไหม (กันระบบตายถ้ายังไม่ได้ ALTER)
   $res = @mysqli_query($GLOBALS['con'], "SHOW COLUMNS FROM orders LIKE 'payment_status'");
   if (!$res) return false;
   return mysqli_num_rows($res) > 0;
@@ -183,7 +193,7 @@ if ($imgInfo === false) {
 // ensure dir
 ensure_dir(SLIP_UPLOAD_DIR);
 
-// ถ้ามีสลิปเก่าอยู่ ลบทิ้งก่อน (กันโฟลเดอร์บวม)
+// ถ้ามีสลิปเก่า ลบทิ้งก่อน
 $oldPayRes = db_query("SELECT slip_file FROM order_payments WHERE order_id=? AND customer_id=? LIMIT 1", "ii", [$order_id, $uid]);
 if ($oldPayRes) {
   $old = mysqli_fetch_assoc($oldPayRes);
@@ -203,26 +213,42 @@ if (!move_uploaded_file($_FILES['slip']['tmp_name'], $fullPath)) {
 }
 
 /* ---------------------------
-   QR check + Save to DB
+   QR check
 --------------------------- */
 $qr_text = $_POST['qr_text'] ?? '';
 $qr_text = normalize_qr_text($qr_text);
 $qr_hash = ($qr_text !== '') ? sha1($qr_text) : null;
 
 $orderAmount = (float)($order['total_amount'] ?? 0);
+$check = qr_check($qr_text, $orderAmount);
 
-$check = qr_check($qr_text, $orderAmount); // ✅ ต้องมีบรรทัดนี้จริง
-
-$qr_valid   = $check['valid'];
-$qr_amount  = $check['amount'];
+$qr_valid   = $check['valid'];                 // 1 / 0 / null
+$qr_amount  = $check['amount'];                // float / null
 $qr_message = $check['message'] ?? '';
 $qr_parsed_json = json_encode($check['parsed'], JSON_UNESCAPED_UNICODE);
-
 
 // แปลงให้ตรง type จริง (bind_param)
 $qr_valid_param  = ($qr_valid === null) ? null : (int)$qr_valid;
 $qr_amount_param = ($qr_amount === null) ? null : (float)$qr_amount;
 
+/* ---------------------------
+   Anti-duplicate QR (กันใช้สลิปซ้ำ)
+--------------------------- */
+$isDup = false;
+if (!empty($qr_hash)) {
+  $dupRes = db_query("SELECT order_id FROM order_payments WHERE qr_hash=? AND order_id<>? LIMIT 1", "si", [$qr_hash, $order_id]);
+  $isDup = ($dupRes && mysqli_fetch_assoc($dupRes)) ? true : false;
+}
+if ($isDup) {
+  // ถ้า QR ซ้ำ ฟันธงเป็นไม่ผ่าน (กันวนใช้สลิปเดิม)
+  $qr_valid_param = 0;
+  $qr_message = 'ไม่ผ่าน: QR ซ้ำกับออเดอร์อื่น (น่าสงสัย)';
+  // amount ไม่จำเป็น
+}
+
+/* ---------------------------
+   Save to order_payments
+--------------------------- */
 $sql = "
   INSERT INTO order_payments
     (order_id, customer_id, slip_file, qr_text, qr_hash, qr_valid, qr_amount, qr_message, qr_parsed_json, verified_at)
@@ -248,7 +274,7 @@ db_query(
     $filename,          // s
     $qr_text,           // s
     $qr_hash,           // s
-    $qr_valid_param,    // i
+    $qr_valid_param,    // i (NULL ไม่ได้กับ i → แต่เราตั้ง valid ให้เป็น 1/0 เป็นหลักแล้ว)
     $qr_amount_param,   // d
     $qr_message,        // s
     $qr_parsed_json     // s
@@ -257,24 +283,23 @@ db_query(
 
 /* ---------------------------
    OPTION A: Update orders.payment_status
-   Paid / Rejected / Review
+   Paid / Verified / Review / Rejected
 --------------------------- */
 $hasPayCol = orders_has_payment_status();
 
-// map status
+// ถ้า valid=1 แต่ไม่มี amount => ถือเป็น Verified (soft pass)
 if ($qr_valid_param === 1) {
-  $newPayStatus = 'Paid';
+  $newPayStatus = ($qr_amount_param !== null && $qr_amount_param !== '') ? 'Paid' : 'Verified';
 } elseif ($qr_valid_param === 0) {
   $newPayStatus = 'Rejected';
 } else {
-  $newPayStatus = 'Review'; // อ่านได้แต่ตรวจรูปแบบ/ยอดไม่ได้ (เช่น QR ตรวจสอบสลิป)
+  $newPayStatus = 'Review';
 }
 
 if ($hasPayCol) {
   db_query("UPDATE orders SET payment_status=? WHERE id=? AND customer_id=?", "sii", [$newPayStatus, $order_id, $uid]);
 } else {
-  // fallback กันระบบตาย ถ้ายังไม่ได้ ALTER TABLE
-  // (แนะนำให้คุณเพิ่ม payment_status ตามที่ตกลงกัน)
+  // fallback ถ้ายังไม่ได้เพิ่มคอลัมน์
   db_query("UPDATE orders SET status=? WHERE id=? AND customer_id=?", "sii", [$newPayStatus, $order_id, $uid]);
 }
 

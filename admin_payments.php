@@ -77,14 +77,16 @@ function badge_qr($r): string {
   }
 
   // qr_valid: 1 / 0 / NULL
-  if ($r['qr_valid'] === null) {
-    // ถ้ามี qr_text แปลว่าอ่านได้ แต่ตรวจรูปแบบ/ยอดไม่ได้
-    if (!empty($r['qr_text'])) {
-      return '<span class="badge bg-warning text-dark">อ่าน QR ได้ แต่ตรวจรูปแบบไม่ได้</span>';
+ if ($r['qr_valid'] === null) {
+  if (!empty($r['qr_text'])) {
+    $u = strtoupper($r['qr_text']);
+    if (strpos($u, '0041') !== false && strpos($u, 'TH') !== false) {
+      return '<span class="badge bg-info text-dark">Verified (QR)</span>';
     }
-    // ไม่มี qr_text เลย = อ่านไม่ได้ (หรือไม่ได้ส่งมา)
-    return '<span class="badge bg-secondary">อ่าน QR ไม่ได้</span>';
+    return '<span class="badge bg-warning text-dark">อ่าน QR ได้ แต่ตรวจรูปแบบไม่ได้</span>';
   }
+  return '<span class="badge bg-secondary">อ่าน QR ไม่ได้</span>';
+}
 
   if ((int)$r['qr_valid'] === 1) {
     return '<span class="badge bg-success">ผ่าน (QR)</span>';
